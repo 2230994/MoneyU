@@ -1,0 +1,79 @@
+// MoneyU - Backend (Node.js sin dependencias externas)
+// Guarda TODOS los datos en el servidor: backend/data/db.json
+const http = require('http');
+const fs = require('fs');
+const path = require('path');
+
+const PORT = process.env.PORT || 3000;
+const DB_FILE = path.join(__dirname, 'data', 'db.json');
+const FRONT = path.join(__dirname, '..', 'frontend');
+const CATS = ['Comida', 'Transporte', 'Diversión', 'Escuela', 'Otros'];
+const MIME = { '.html': 'text/html; charset=utf-8', '.js': 'text/javascript; charset=utf-8', '.css': 'text/css; charset=utf-8', '.json': 'application/json' };
+
+fs.mkdirSync(path.dirname(DB_FILE), { recursive: true });
+const load = () => { try { return JSON.parse(fs.readFileSync(DB_FILE, 'utf8')); } catch { return { presupuesto: 1000, gastos: [] }; } };
+const save = (d) => fs.writeFileSync(DB_FILE, JSON.stringify(d, null, 2));
+if (!fs.existsSync(DB_FILE)) save({ presupuesto: 1000, gastos: [] });
+
+const CORS = { 'Access-Control-Allow-Origin': '*', 'Access-Control-Allow-Methods': 'GET,POST,PUT,DELETE,OPTIONS', 'Access-Control-Allow-Headers': 'Content-Type' };
+const send = (res, code, obj) => { res.writeHead(code, { 'Content-Type': 'application/json; charset=utf-8', ...CORS }); res.end(JSON.stringify(obj)); };
+const readBody = (req) => new Promise((ok) => {
+  let b = '';
+  req.on('data', (c) => { b += c; if (b.length > 1e5) req.destroy(); });
+  req.on('end', () => { try { ok(JSON.parse(b || '{}')); } catch { ok({}); } });
+});
+const nuevo = (concepto, monto, categoria, fecha) => ({
+  id: Date.now().toString(36) + Math.random().toString(36).slice(2, 6),
+  concepto: String(concepto).trim().slice(0, 60),
+  monto: Math.round(Number(monto) * 100) / 100,
+  categoria: CATS.includes(categoria) ? categoria : 'Otros',
+  fecha: fecha || new Date().toISOString(),
+});
+
+const server = http.createServer(async (req, res) => {
+  const url = new URL(req.url, 'http://localhost');
+  const p = url.pathname;
+  if (req.method === 'OPTIONS') { res.writeHead(204, CORS); return res.end(); }
+
+  if (p.startsWith('/api/')) {
+    const db = load();
+    if (p === '/api/estado' && req.method === 'GET') return send(res, 200, db);
+
+    if (p === '/api/gastos' && req.method === 'POST') {
+      const b = await readBody(req);
+      if (!String(b.concepto || '').trim() || !(Number(b.monto) > 0)) return send(res, 400, { error: 'Concepto y monto mayor a 0 son obligatorios' });
+      const g = nuevo(b.concepto, b.monto, b.categoria);
+      db.gastos.unshift(g); save(db);
+      return send(res, 201, g);
+    }
+    if (p === '/api/gastos' && req.method === 'DELETE') { db.gastos = []; save(db); return send(res, 200, db); }
+
+    const m = p.match(/^\/api\/gastos\/([\w-]+)$/);
+    if (m && req.method === 'DELETE') { db.gastos = db.gastos.filter((g) => g.id !== m[1]); save(db); return send(res, 200, db); }
+
+    if (p === '/api/presupuesto' && req.method === 'PUT') {
+      const b = await readBody(req);
+      if (!(Number(b.presupuesto) > 0)) return send(res, 400, { error: 'Presupuesto inválido' });
+      db.presupuesto = Number(b.presupuesto); save(db);
+      return send(res, 200, db);
+    }
+    if (p === '/api/demo' && req.method === 'POST') {
+      const demo = [['Tacos en la cafetería', 85, 'Comida'], ['Camión a la universidad', 40, 'Transporte'], ['Cine con amigos', 120, 'Diversión'], ['Copias y libreta', 60, 'Escuela'], ['Comida del día', 150, 'Comida']];
+      demo.forEach((d, i) => db.gastos.unshift(nuevo(d[0], d[1], d[2], new Date(Date.now() - i * 3600e3).toISOString())));
+      save(db);
+      return send(res, 200, db);
+    }
+    return send(res, 404, { error: 'Ruta no encontrada' });
+  }
+
+  // Archivos estáticos del frontend (opcional si el frontend se despliega aparte)
+  let file = path.normalize(path.join(FRONT, p === '/' ? 'index.html' : p));
+  if (!file.startsWith(FRONT)) { res.writeHead(403); return res.end(); }
+  fs.readFile(file, (err, data) => {
+    if (err) { res.writeHead(404); return res.end('No encontrado'); }
+    res.writeHead(200, { 'Content-Type': MIME[path.extname(file)] || 'application/octet-stream' });
+    res.end(data);
+  });
+});
+
+server.listen(PORT, () => console.log(`MoneyU listo en http://localhost:${PORT}`));
